@@ -30,7 +30,7 @@ export function SurfboardModel() {
     groupRef.current.rotation.y += delta * 0.7
     groupRef.current.rotation.x = 0.3 + tilt.x * 0.25
     groupRef.current.rotation.z = tilt.y * 0.2
-    groupRef.current.position.y = Math.sin(state.clock.elapsedTime * 2.3) * 0.12 + 0.05
+    groupRef.current.position.set(0, Math.sin(state.clock.elapsedTime * 2.3) * 0.12 + 0.05, 0)
   })
 
   return (
@@ -66,7 +66,7 @@ export function BeachBallModel() {
     groupRef.current.rotation.y += delta * 0.8
     groupRef.current.rotation.x = tilt.x * 0.14
     groupRef.current.rotation.z = tilt.y * 0.14
-    groupRef.current.position.y = Math.sin(state.clock.elapsedTime * 2.2) * 0.09
+    groupRef.current.position.set(0, Math.sin(state.clock.elapsedTime * 2.2) * 0.09, 0)
   })
 
   return (
@@ -94,6 +94,7 @@ export function SandcastleModel({ built }) {
     groupRef.current.rotation.y += delta * 0.35
     groupRef.current.rotation.x = tilt.x * 0.16
     groupRef.current.rotation.z = tilt.y * 0.16
+    groupRef.current.position.set(0, 0, 0)
     groupRef.current.scale.y = 0.9 + Math.sin(state.clock.elapsedTime * 1.7) * 0.03
   })
 
@@ -130,6 +131,7 @@ export function SunModel() {
     groupRef.current.rotation.z += delta * 0.35
     groupRef.current.rotation.x = tilt.x * 0.12
     groupRef.current.rotation.y = tilt.y * 0.12
+    groupRef.current.position.set(0, 0, 0)
   })
 
   return (

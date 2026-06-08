@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import { Canvas } from '@react-three/fiber'
 import { SunModel } from './BeachModels'
 import SurfboardBurst from './SurfboardBurst'
+import ThreeErrorBoundary from './ThreeErrorBoundary'
 
 export default function Contact() {
   return (
@@ -19,11 +20,13 @@ export default function Contact() {
 
         <div className="mt-8 flex flex-col items-center justify-center gap-6">
           <div className="h-[220px] w-full max-w-[260px] rounded-[24px] border border-[#FFD166]/40 bg-[radial-gradient(circle_at_top,_rgba(255,209,102,0.24),_rgba(255,255,255,0.08))] p-3">
-            <Canvas camera={{ position: [0, 0.4, 3.7], fov: 28 }}>
-              <ambientLight intensity={0.8} />
-              <directionalLight position={[2, 3, 2]} intensity={1.2} />
-              <SunModel />
-            </Canvas>
+            <ThreeErrorBoundary>
+              <Canvas camera={{ position: [0, 0.4, 3.7], fov: 28 }}>
+                <ambientLight intensity={0.8} />
+                <directionalLight position={[2, 3, 2]} intensity={1.2} />
+                <SunModel />
+              </Canvas>
+            </ThreeErrorBoundary>
           </div>
 
           <SurfboardBurst>

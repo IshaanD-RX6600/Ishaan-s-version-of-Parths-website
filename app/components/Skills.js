@@ -5,6 +5,7 @@ import { motion } from 'framer-motion'
 import { Canvas } from '@react-three/fiber'
 import { BeachBallModel } from './BeachModels'
 import SurfboardBurst from './SurfboardBurst'
+import ThreeErrorBoundary from './ThreeErrorBoundary'
 
 const skills = [
   'UI concepts',
@@ -44,11 +45,13 @@ export default function Skills() {
         <div className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr] lg:items-center">
           <div className="rounded-[30px] border border-white/70 bg-white/80 p-6 shadow-[0_20px_60px_-24px_rgba(26,58,92,0.28)]">
             <div className="h-[300px] rounded-[24px] border border-[#FFD166]/40 bg-[radial-gradient(circle_at_top,_rgba(255,209,102,0.28),_rgba(255,255,255,0.05))] p-4">
-              <Canvas camera={{ position: [0, 0.8, 4], fov: 28 }}>
-                <ambientLight intensity={0.8} />
-                <directionalLight position={[2, 3, 2]} intensity={1.2} />
-                <BeachBallModel />
-              </Canvas>
+              <ThreeErrorBoundary>
+                <Canvas camera={{ position: [0, 0.8, 4], fov: 28 }}>
+                  <ambientLight intensity={0.8} />
+                  <directionalLight position={[2, 3, 2]} intensity={1.2} />
+                  <BeachBallModel />
+                </Canvas>
+              </ThreeErrorBoundary>
             </div>
           </div>
 

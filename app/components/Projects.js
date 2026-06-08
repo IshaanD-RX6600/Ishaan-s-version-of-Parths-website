@@ -5,6 +5,7 @@ import { motion } from 'framer-motion'
 import { Canvas } from '@react-three/fiber'
 import { SandcastleModel } from './BeachModels'
 import SurfboardBurst from './SurfboardBurst'
+import ThreeErrorBoundary from './ThreeErrorBoundary'
 
 const projects = [
   {
@@ -70,11 +71,13 @@ export default function Projects() {
 
           <motion.div initial={{ opacity: 0, x: 24 }} whileInView={{ opacity: 1, x: 0 }} viewport={{ once: true }} transition={{ duration: 0.7 }} className="rounded-[32px] border border-white/70 bg-[#FFF3D6]/70 p-6 shadow-[0_20px_60px_-24px_rgba(26,58,92,0.28)]">
             <div className="h-[340px] rounded-[24px] border border-[#2EC4B6]/30 bg-[radial-gradient(circle_at_top,_rgba(46,196,182,0.18),_rgba(255,255,255,0.04))] p-4">
-              <Canvas camera={{ position: [0, 1.5, 4.8], fov: 28 }}>
-                <ambientLight intensity={0.9} />
-                <directionalLight position={[2, 3, 2]} intensity={1.2} />
-                <SandcastleModel built={built} />
-              </Canvas>
+              <ThreeErrorBoundary>
+                <Canvas camera={{ position: [0, 1.5, 4.8], fov: 28 }}>
+                  <ambientLight intensity={0.9} />
+                  <directionalLight position={[2, 3, 2]} intensity={1.2} />
+                  <SandcastleModel built={built} />
+                </Canvas>
+              </ThreeErrorBoundary>
             </div>
             <p className="mt-4 text-sm leading-7 text-[#1A3A5C]/75">The sandcastle rises as you scroll in — a little bit of build-up, a little bit of sparkle. {/* Replace with a real project note. */}</p>
           </motion.div>

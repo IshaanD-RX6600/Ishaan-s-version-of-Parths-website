@@ -5,6 +5,7 @@ import { motion, useScroll, useTransform } from 'framer-motion'
 import { Canvas } from '@react-three/fiber'
 import SurfboardBurst from './SurfboardBurst'
 import { SurfboardModel } from './BeachModels'
+import ThreeErrorBoundary from './ThreeErrorBoundary'
 
 export default function Hero() {
   const sectionRef = useRef(null)
@@ -49,12 +50,14 @@ export default function Hero() {
 
         <motion.div style={{ y, rotate }} className="relative overflow-hidden rounded-[32px] border border-white/70 bg-white/70 p-4 shadow-[0_30px_80px_-25px_rgba(26,58,92,0.28)] sm:p-6">
           <div className="relative h-[470px] w-full rounded-[28px] bg-[radial-gradient(circle_at_top,_rgba(255,209,102,0.45),_transparent_45%)] lg:h-[560px]">
-            <Canvas camera={{ position: [0, 1.2, 5.8], fov: 28 }}>
-              <ambientLight intensity={0.9} />
-              <directionalLight position={[3, 4, 3]} intensity={1.4} />
-              <pointLight position={[0, 2, 2]} intensity={0.8} color="#FFD166" />
-              <SurfboardModel />
-            </Canvas>
+            <ThreeErrorBoundary>
+              <Canvas camera={{ position: [0, 1.2, 5.8], fov: 28 }}>
+                <ambientLight intensity={0.9} />
+                <directionalLight position={[3, 4, 3]} intensity={1.4} />
+                <pointLight position={[0, 2, 2]} intensity={0.8} color="#FFD166" />
+                <SurfboardModel />
+              </Canvas>
+            </ThreeErrorBoundary>
           </div>
           <div className="absolute bottom-4 left-4 right-4 rounded-[24px] border border-white/80 bg-white/85 p-4 text-sm leading-7 text-[#1A3A5C] shadow-sm">
             Tiny detail: this board is always ready for the next bright idea. {/* Replace with your favorite tagline. */}
