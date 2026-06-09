@@ -5,7 +5,7 @@
 :root {
   color-scheme: light;
   font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
-  background-color: #fff3d6;
+  background-color: #FFF3D6;
 }
 
 html {
@@ -14,20 +14,8 @@ html {
 
 body {
   min-height: 100vh;
-  overflow-x: hidden;
-  background: linear-gradient(180deg, #fff3d6 0%, #fff7e4 35%, #2ec4b6 100%);
-  color: #1a3a5c;
+  background: linear-gradient(180deg, #FFF3D6 0%, #FFF7E8 45%, #2EC4B6 100%);
+  color: #1A3A5C;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-::selection {
-  background: #ff6b6b;
-  color: #fff;
-}
-
-section {
-  position: relative;
-}
+* { box-sizing: border-box; }
