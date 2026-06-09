@@ -6,6 +6,10 @@
   ],
   theme: {
     extend: {
+      fontFamily: {
+        head: ['var(--font-head)', 'sans-serif'],
+        body: ['var(--font-body)', 'sans-serif']
+      },
       colors: {
         sand: '#F5ECD7',
         ocean: '#0D3B5E',
