@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -11,51 +12,68 @@ import {
 import { AnimatePresence, motion } from 'framer-motion'
 import { usePathname, useRouter } from 'next/navigation'
 
-// ─── Scene layout constants ───────────────────────────────────────────────────
+// ─── Scene + content config ───────────────────────────────────────────────────
 // Positions are [x, z] in runtime world space (islands.glb rendered at 1.8×).
-// Each island is a real landmass; `toNext` is a water-only A* route (string-
-// pulled) from this island's berth to the next island's berth, derived from a
-// top-down land/water mask of islands.glb — so the boat threads the channels
-// between islands instead of sailing through them. Order = the scroll tour.
+// `center` anchors the floating label; `berth` is the water dock point the boat
+// must reach to sail across to that island's page. `route` is where reaching the
+// berth takes the visitor (via the water transition).
 
 export const FLOAT_Y = -2.8 // boat hull resting height on the water
 export const LABEL_Y = 12 // height of the floating island signs
+
+// Where the boat spawns every time the journey (re)starts: open water near the
+// bottom of the map (z = 46 sits past the islands' ~±39 extent, so it's always
+// clear water), pointed up into the archipelago (yaw = π faces −z).
+export const START = { x: 0, z: 46, yaw: Math.PI }
 
 export const BOAT = {
   glb: 'sailboat.glb',
   scale: 0.0035,
   baseYaw: 0, // set to Math.PI if the hull visually faces backwards
-  // Third-person chase camera (outside / behind the boat).
-  camBack: 14, // distance behind the boat
-  camUp: 7, // height above the boat
-  camLookAhead: 3, // look-at point ahead of the boat
-  camLookHeight: 1.5 // raise the look-at toward the deck/mast
+  // Free-roam handling
+  moveSpeed: 9, // world units / second at full throttle
+  turnSpeed: 1.7, // radians / second
+  hullHalf: 2.6, // half-length sampled for collision (bow / stern)
+  clearance: 2.8, // how close to land before the boat is eased off
+  pushStrength: 8, // how firmly the boat is shoved away from islands
+  // Near-bird's-eye chase camera (high up, slight angle behind the boat)
+  camBack: 8,
+  camUp: 27,
+  camLookAhead: 2,
+  camLookHeight: 0
 }
 
+export const DOCK_RADIUS = 7.5 // how close the boat must get to a berth to land
+
 export const ISLANDS = [
-  { key: 'home', name: 'Home', href: '/', center: [-3.06, -8.72], berth: [-1.86, -11.76],
-    toNext: [[-1.86, -11.76], [-6.81, -16.71], [-14.23, -16.71], [-15.47, -4.33], [-20.42, 1.86], [-19.18, 8.04], [-16.71, 11.76]] },
-  { key: 'about', name: 'About', href: '/about', center: [-10.03, 18.48], berth: [-16.71, 11.76],
-    toNext: [[-16.71, 11.76], [-20.42, 4.33], [-20.42, 0.62], [3.09, 3.09], [11.76, 9.28], [32.79, 10.52], [34.03, 14.23]] },
-  { key: 'projects', name: 'Projects', href: '/projects', center: [28.98, 18.65], berth: [34.03, 14.23],
-    toNext: [[34.03, 14.23], [30.32, 4.33], [24.13, -1.86], [21.66, -20.42], [22.89, -24.13], [24.13, -24.13]] },
-  { key: 'skills', name: 'Skills', href: '/skills', center: [28.49, -18.59], berth: [24.13, -24.13],
-    toNext: [[24.13, -24.13], [-0.62, -24.13], [-3.09, -21.66], [-3.09, -14.23], [-0.62, -14.23]] },
-  { key: 'contact', name: 'Contact', href: '/contact', center: [3.4, -16.53], berth: [-0.62, -14.23] }
+  {
+    key: 'home', name: 'Home', center: [-3.06, -8.72], berth: [-1.86, -11.76],
+    route: '/'
+  },
+  {
+    key: 'about', name: 'About', center: [-10.03, 18.48], berth: [-16.71, 11.76],
+    route: '/about'
+  },
+  {
+    key: 'projects', name: 'Projects', center: [28.98, 18.65], berth: [34.03, 14.23],
+    route: '/projects'
+  },
+  {
+    key: 'skills', name: 'Skills', center: [28.49, -18.59], berth: [24.13, -24.13],
+    route: '/skills'
+  },
+  {
+    key: 'contact', name: 'Contact', center: [3.4, -16.53], berth: [-0.62, -14.23],
+    route: '/contact'
+  }
 ]
 
-const INDEX_BY_HREF = Object.fromEntries(ISLANDS.map((island, i) => [island.href, i]))
+const ISLAND_BY_KEY = Object.fromEntries(ISLANDS.map((i) => [i.key, i]))
 
-const SCROLL_K = 0.0011 // wheel delta → progress
-const NAV_AT = 0.985 // progress at which we cross to the next/prev island
-const NAV_COOLDOWN = 450 // ms of input lock after a route change
+// Held movement keys, shared provider → Scene3D without React re-renders.
+export const input = { keys: {} }
 
-export const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
-
-// Live scroll state, shared provider ⇆ Scene3D without React re-renders.
-//   progress: scroll target in [-1, 1] (0 = parked, +1 = at next, −1 = at prev)
-//   eased:    smoothed value the boat actually rides
-export const nav = { progress: 0, eased: 0, navigating: false }
+const MOVE_CODES = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 const JourneyContext = createContext(null)
@@ -67,145 +85,269 @@ export function useJourney() {
 }
 
 export function JourneyProvider({ children }) {
-  const router = useRouter()
   const pathname = usePathname()
+  const active = pathname === '/' // free-roam only lives on the landing route
 
-  const [index, setIndex] = useState(() => INDEX_BY_HREF[pathname] ?? 0)
+  // The "press any key to set sail" gate. Deliberately NOT persisted, so it
+  // greets the visitor every single time they are on the landing page.
+  const [started, setStarted] = useState(false)
+  const [near, setNear] = useState(null) // island key within docking range
+  const [navTarget, setNavTarget] = useState(null) // route the water voyage is heading to
 
-  // Refs the rAF / input loops read without re-subscribing.
-  const indexRef = useRef(index)
-  const nextHref = useRef(ISLANDS[index + 1]?.href ?? null)
-  const prevHref = useRef(ISLANDS[index - 1]?.href ?? null)
-  const cooldownUntil = useRef(0)
+  const startedRef = useRef(started)
+  const nearRef = useRef(near)
+  const activeRef = useRef(active)
+  const navTargetRef = useRef(navTarget)
+  startedRef.current = started
+  nearRef.current = near
+  activeRef.current = active
+  navTargetRef.current = navTarget
 
-  // Sync tour position to the current route and reset the scrubber.
+  // Scene3D reports the nearest dockable island (only when it changes).
+  const reportNear = useCallback((key) => setNear(key), [])
+
+  const startSail = useCallback(() => setStarted(true), [])
+  const beginVoyage = useCallback((route) => {
+    input.keys = {} // drop held keys so the boat stops as the water rises
+    setNavTarget(route)
+  }, [])
+  const endVoyage = useCallback(() => setNavTarget(null), [])
+
+  // Reaching an island's berth sets sail to its page (once, while playing).
   useEffect(() => {
-    const idx = INDEX_BY_HREF[pathname] ?? 0
-    indexRef.current = idx
-    nextHref.current = ISLANDS[idx + 1]?.href ?? null
-    prevHref.current = ISLANDS[idx - 1]?.href ?? null
-    nav.progress = 0
-    nav.eased = 0
-    nav.navigating = false
-    cooldownUntil.current = (typeof performance !== 'undefined' ? performance.now() : 0) + NAV_COOLDOWN
-    setIndex(idx)
-  }, [pathname])
+    if (!active || !started || navTarget || !near) return
+    const island = ISLAND_BY_KEY[near]
+    if (island?.route && island.route !== pathname) beginVoyage(island.route)
+  }, [near, active, started, navTarget, pathname, beginVoyage])
 
-  // Ease the boat's progress and trip the route change when it arrives.
+  // Global keyboard: "any key" to set sail, then movement (held).
   useEffect(() => {
-    let raf
-    let last = performance.now()
-    const tick = (now) => {
-      const dt = Math.min(0.05, (now - last) / 1000)
-      last = now
-      nav.eased += (nav.progress - nav.eased) * Math.min(1, dt * 4)
-      if (!nav.navigating) {
-        if (nav.eased >= NAV_AT && nextHref.current) {
-          nav.navigating = true
-          router.push(nextHref.current)
-        } else if (nav.eased <= -NAV_AT && prevHref.current) {
-          nav.navigating = true
-          router.push(prevHref.current)
+    const onDown = (e) => {
+      if (!activeRef.current) return
+      if (!startedRef.current) {
+        // Any key launches the journey; don't also act on it this frame.
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+          setStarted(true)
+          e.preventDefault()
         }
+        return
       }
-      raf = requestAnimationFrame(tick)
+      if (navTargetRef.current) return // frozen during the water transition
+      if (MOVE_CODES.includes(e.code)) {
+        input.keys[e.code] = true
+        e.preventDefault()
+      }
     }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [router])
-
-  // Scroll / touch drive the boat along the route to the next (or prev) island.
-  useEffect(() => {
-    const advance = (delta) => {
-      if (nav.navigating || performance.now() < cooldownUntil.current) return
-      const lo = prevHref.current ? -1 : 0
-      const hi = nextHref.current ? 1 : 0
-      nav.progress = clamp(nav.progress + delta * SCROLL_K, lo, hi)
+    const onUp = (e) => {
+      if (MOVE_CODES.includes(e.code)) input.keys[e.code] = false
     }
-    const onWheel = (e) => {
-      e.preventDefault()
-      advance(e.deltaY)
-    }
-    let touchY = null
-    const onTouchStart = (e) => { touchY = e.touches[0].clientY }
-    const onTouchMove = (e) => {
-      if (touchY == null) return
-      const dy = touchY - e.touches[0].clientY
-      touchY = e.touches[0].clientY
-      e.preventDefault()
-      advance(dy * 2)
-    }
-    window.addEventListener('wheel', onWheel, { passive: false })
-    window.addEventListener('touchstart', onTouchStart, { passive: false })
-    window.addEventListener('touchmove', onTouchMove, { passive: false })
+    const clear = () => { input.keys = {} }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    window.addEventListener('blur', clear)
     return () => {
-      window.removeEventListener('wheel', onWheel)
-      window.removeEventListener('touchstart', onTouchStart)
-      window.removeEventListener('touchmove', onTouchMove)
+      window.removeEventListener('keydown', onDown)
+      window.removeEventListener('keyup', onUp)
+      window.removeEventListener('blur', clear)
     }
   }, [])
 
+  // Leaving the landing route resets the journey so it greets the visitor anew
+  // (intro re-arms, held keys drop, dock state clears) on their return.
+  useEffect(() => {
+    if (!active) {
+      input.keys = {}
+      setStarted(false)
+      setNear(null)
+    }
+  }, [active])
+
   const value = useMemo(
     () => ({
-      index,
-      island: ISLANDS[index],
-      prevIsland: ISLANDS[index - 1] ?? null,
-      nextIsland: ISLANDS[index + 1] ?? null
+      active,
+      started,
+      navTarget,
+      paused: !started || navTarget != null,
+      reportNear,
+      startSail,
+      endVoyage
     }),
-    [index]
+    [active, started, navTarget, reportNear, startSail, endVoyage]
   )
 
   return <JourneyContext.Provider value={value}>{children}</JourneyContext.Provider>
 }
 
-// ─── DOM overlay: scroll prompt + wayfinding indicator ────────────────────────
-export function JourneyOverlay() {
-  const { index, prevIsland, nextIsland } = useJourney()
+// ─── Reusable wavy waterline (leading edge of the transition + intro) ──────────
+function WaveEdge({ className, fill = '#ffffff', flip = false }) {
+  return (
+    <svg
+      viewBox="0 0 1440 120"
+      preserveAspectRatio="none"
+      className={className}
+      style={flip ? { transform: 'scaleY(-1)' } : undefined}
+      aria-hidden
+    >
+      <path
+        fill={fill}
+        d="M0,64 C180,112 360,16 540,40 C720,64 900,120 1080,104 C1260,88 1380,40 1440,48 L1440,120 L0,120 Z"
+      />
+    </svg>
+  )
+}
+
+// ─── "Press any key to set sail" intro (shows on every landing-page visit) ─────
+function Intro() {
+  const { active, started, navTarget, startSail } = useJourney()
+  const show = active && !started && !navTarget
 
   return (
-    <>
-      {/* Opening prompt, only on the Home island */}
-      <AnimatePresence>
-        {index === 0 && (
-          <motion.div
-            key="prompt"
-            initial={{ opacity: 0, y: 16 }}
+    <AnimatePresence>
+      {show && (
+        <motion.div
+          key="intro"
+          role="button"
+          tabIndex={0}
+          onClick={startSail}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.5 }}
+          className="fixed inset-0 z-50 flex cursor-pointer flex-col items-center justify-center text-center"
+          style={{ background: 'linear-gradient(180deg, rgba(13,59,94,0.35) 0%, rgba(13,59,94,0.6) 100%)' }}
+        >
+          <motion.p
+            initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 16 }}
-            transition={{ duration: 0.5, ease: [0.4, 0, 0.2, 1] }}
-            className="pointer-events-none fixed inset-x-0 bottom-24 z-30 flex flex-col items-center gap-1 text-center"
+            transition={{ duration: 0.6, delay: 0.1 }}
+            className="text-xs font-semibold uppercase tracking-[0.5em] text-[#FFD166] drop-shadow"
           >
-            <motion.span
-              animate={{ opacity: [0.55, 1, 0.55] }}
-              transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
-              className="text-lg font-semibold tracking-wide text-white drop-shadow-[0_2px_12px_rgba(13,59,94,0.7)] sm:text-xl"
-              style={{ fontFamily: 'var(--font-head)' }}
-            >
-              Scroll to set sail
-            </motion.span>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            Parth Pandit
+          </motion.p>
 
-      {/* Wayfinding: which island scrolling up / down sails to */}
-      <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex flex-col items-center gap-1 text-center">
-        {nextIsland && (
-          <motion.span
-            key={`next-${nextIsland.key}`}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: [0, 4, 0] }}
-            transition={{ y: { duration: 1.8, repeat: Infinity, ease: 'easeInOut' }, opacity: { duration: 0.4 } }}
-            className="text-xs font-semibold uppercase tracking-[0.3em] text-white/85 drop-shadow"
+          <motion.h1
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.7, delay: 0.18, ease: [0.4, 0, 0.2, 1] }}
+            className="mt-4 max-w-2xl px-6 text-4xl font-semibold leading-tight text-white drop-shadow-lg sm:text-6xl"
+            style={{ fontFamily: 'var(--font-head)' }}
           >
-            ↓ {nextIsland.name}
+            Press any key to set sail
+          </motion.h1>
+
+          <motion.span
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0.45, 1, 0.45] }}
+            transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+            className="mt-6 rounded-full border border-white/40 bg-white/10 px-5 py-2 text-xs font-medium uppercase tracking-[0.3em] text-white/90 backdrop-blur-sm"
+          >
+            Any key · or tap · to begin
           </motion.span>
-        )}
-        {prevIsland && (
-          <span className="text-[10px] font-medium uppercase tracking-[0.3em] text-white/55">
-            ↑ {prevIsland.name}
+
+          {/* gently lapping waterline along the bottom */}
+          <motion.div
+            initial={{ y: 12 }}
+            animate={{ y: [12, 4, 12] }}
+            transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+            className="pointer-events-none absolute bottom-0 left-0 w-full"
+          >
+            <WaveEdge className="h-24 w-full" fill="rgba(63,183,201,0.55)" />
+            <WaveEdge className="-mt-20 h-24 w-full" fill="rgba(13,59,94,0.7)" />
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+// ─── Water voyage: sweeps over the screen, navigates, then washes away ─────────
+function Voyage() {
+  const { navTarget, endVoyage } = useJourney()
+  const router = useRouter()
+  const [phase, setPhase] = useState('cover') // 'cover' rises in → 'reveal' washes out
+  const timer = useRef(null)
+
+  useEffect(() => {
+    if (navTarget) setPhase('cover')
+  }, [navTarget])
+
+  useEffect(() => () => clearTimeout(timer.current), [])
+
+  const onComplete = () => {
+    if (phase === 'cover') {
+      router.push(navTarget)
+      // Brief hold on the full-screen water, then let the new page show through.
+      timer.current = setTimeout(() => setPhase('reveal'), 160)
+    } else {
+      endVoyage()
+    }
+  }
+
+  return (
+    <AnimatePresence>
+      {navTarget && (
+        <motion.div
+          key="voyage"
+          initial={{ y: '100%' }}
+          animate={{ y: phase === 'reveal' ? '-100%' : '0%' }}
+          transition={{ duration: 0.75, ease: [0.65, 0, 0.35, 1] }}
+          onAnimationComplete={onComplete}
+          className="pointer-events-auto fixed inset-0 z-[60]"
+        >
+          <div className="relative h-full w-full overflow-hidden bg-gradient-to-b from-[#3FB7C9] via-[#1C6E8C] to-[#0D3B5E]">
+            {/* foamy leading edge of the rising water */}
+            <WaveEdge className="absolute left-0 top-0 h-28 w-full -translate-y-[88%]" fill="#3FB7C9" flip />
+            <WaveEdge className="absolute left-0 top-0 h-20 w-full -translate-y-[60%]" fill="rgba(255,255,255,0.35)" flip />
+
+            <div className="flex h-full w-full items-center justify-center">
+              <motion.span
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: phase === 'cover' ? 1 : 0, y: 0 }}
+                transition={{ duration: 0.4, delay: 0.15 }}
+                className="text-sm font-semibold uppercase tracking-[0.45em] text-white/90 drop-shadow"
+                style={{ fontFamily: 'var(--font-head)' }}
+              >
+                Charting course…
+              </motion.span>
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+// ─── Sailing controls hint (after the journey begins) ──────────────────────────
+function ControlsHint() {
+  const { active, started, navTarget } = useJourney()
+
+  return (
+    <AnimatePresence>
+      {active && started && !navTarget && (
+        <motion.div
+          key="controls"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.5 }}
+          className="pointer-events-none fixed bottom-6 left-1/2 z-30 -translate-x-1/2 text-center"
+        >
+          <span className="rounded-full bg-black/25 px-4 py-2 text-xs font-medium uppercase tracking-[0.28em] text-white/85 backdrop-blur-sm">
+            W A S D / arrows to sail · reach an island to explore it
           </span>
-        )}
-      </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+// ─── DOM overlay: intro gate, sailing hint, water voyage transition ───────────
+export function JourneyOverlay() {
+  return (
+    <>
+      <ControlsHint />
+      <Intro />
+      <Voyage />
     </>
   )
 }

@@ -1,40 +1,66 @@
 'use client'
 
-import { Suspense, useRef } from 'react'
+import { Suspense, useEffect, useRef } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { useGLTF, Environment, Sky, Html } from '@react-three/drei'
 import * as THREE from 'three'
 
-import { useJourney, ISLANDS, BOAT, FLOAT_Y, LABEL_Y, nav } from './Journey'
+import { useJourney, ISLANDS, BOAT, FLOAT_Y, LABEL_Y, DOCK_RADIUS, START, input } from './Journey'
+import { isBlocked, buildOccupancy, WORLD_BOUND } from './islandCollision'
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
 const ISLAND_GLB = `${BASE}/islands.glb`
 const BOAT_GLB = `${BASE}/${BOAT.glb}`
 
-// Live boat transform, shared boat → camera without React re-renders.
-const boatState = { x: ISLANDS[0].berth[0], y: FLOAT_Y, z: ISLANDS[0].berth[1], yaw: 0 }
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
 
-// Sample an [x,z] polyline at u∈[0,1] by arc length → { x, z, dx, dz } (dir unit).
-function samplePath(path, u) {
-  const segs = []
-  let total = 0
-  for (let i = 0; i < path.length - 1; i++) {
-    const d = Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1])
-    segs.push(d)
-    total += d
-  }
-  if (total === 0) return { x: path[0][0], z: path[0][1], dx: 0, dz: -1 }
-  let dist = Math.max(0, Math.min(1, u)) * total
-  for (let i = 0; i < segs.length; i++) {
-    if (dist <= segs[i] || i === segs.length - 1) {
-      const a = path[i]
-      const b = path[i + 1]
-      const len = segs[i] || 1
-      const t = Math.max(0, Math.min(1, dist / len))
-      return { x: a[0] + (b[0] - a[0]) * t, z: a[1] + (b[1] - a[1]) * t, dx: (b[0] - a[0]) / len, dz: (b[1] - a[1]) / len }
+// Live boat transform, shared boat → camera without React re-renders.
+const boatState = { x: START.x, y: FLOAT_Y, z: START.z, yaw: START.yaw }
+
+// The boat's hull occupies more than a point — sample bow, centre and stern so
+// it can't nose into an island before its centre cell registers a hit.
+function hullBlocked(cx, cz, yaw) {
+  const fx = Math.sin(yaw)
+  const fz = Math.cos(yaw)
+  const L = BOAT.hullHalf
+  return isBlocked(cx, cz) || isBlocked(cx + fx * L, cz + fz * L) || isBlocked(cx - fx * L, cz - fz * L)
+}
+
+// Repulsion so the boat can never rest against land: sample a ring at the
+// clearance radius and return a unit vector pointing away from any nearby
+// island cells (null when there's open water all around).
+function repel(x, z) {
+  let px = 0
+  let pz = 0
+  let hits = 0
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2
+    const dx = Math.cos(a)
+    const dz = Math.sin(a)
+    if (isBlocked(x + dx * BOAT.clearance, z + dz * BOAT.clearance)) {
+      px -= dx
+      pz -= dz
+      hits++
     }
-    dist -= segs[i]
   }
+  if (!hits) return null
+  const len = Math.hypot(px, pz) || 1
+  return { px: px / len, pz: pz / len }
+}
+
+function nearestDock(x, z) {
+  let best = null
+  let bd = DOCK_RADIUS * DOCK_RADIUS
+  for (const island of ISLANDS) {
+    const dx = x - island.berth[0]
+    const dz = z - island.berth[1]
+    const d = dx * dx + dz * dz
+    if (d < bd) {
+      bd = d
+      best = island.key
+    }
+  }
+  return best
 }
 
 // ─── Animated procedural ocean ───────────────────────────────────────────────
@@ -80,6 +106,15 @@ function IslandModel() {
   const { scene } = useGLTF(ISLAND_GLB)
   const ref = useRef()
 
+  // Bake the collision mask from the real, placed mesh once it's mounted (next
+  // tick, so the intro can paint first). Guarantees the wall matches the rock.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      if (ref.current) buildOccupancy(ref.current)
+    }, 0)
+    return () => clearTimeout(id)
+  }, [])
+
   useFrame(({ clock }) => {
     if (!ref.current) return
     ref.current.position.y = -1.9 + Math.sin(clock.elapsedTime * 0.28 + 1.1) * 0.04
@@ -88,68 +123,111 @@ function IslandModel() {
   return <primitive ref={ref} object={scene} scale={[1.8, 1.8, 1.8]} position={[0, -1.9, 0]} />
 }
 
-// ─── Sailboat ─────────────────────────────────────────────────────────────────
-// Rides the scroll: parked at the current island's berth (progress 0) and
-// gliding along the water route toward the next (progress→1) or previous
-// (progress→−1) island. Position comes straight from the eased scroll value,
-// so it can never leave the channel the route was carved through.
+// ─── Sailboat — free roam with WASD / arrows + island collision ───────────────
 function Boat() {
   const { scene } = useGLTF(BOAT_GLB)
   const group = useRef()
-  const yaw = useRef(0)
-  const { index } = useJourney()
+  const x = useRef(START.x)
+  const z = useRef(START.z)
+  const yaw = useRef(START.yaw)
+  const speed = useRef(0)
+  const lastNear = useRef(null)
+  const { active, paused, reportNear } = useJourney()
+
+  // Every time the journey (re)starts, drop the boat back in its open-water
+  // berth near the bottom of the map, pointed up into the islands.
+  useEffect(() => {
+    if (!active) return
+    x.current = START.x
+    z.current = START.z
+    yaw.current = START.yaw
+    speed.current = 0
+    boatState.x = START.x
+    boatState.z = START.z
+    boatState.yaw = START.yaw
+    boatState.y = FLOAT_Y
+  }, [active])
 
   useFrame(({ clock }, delta) => {
     const g = group.current
     if (!g) return
     const dt = Math.min(delta, 0.05)
-    const e = nav.eased
+    const k = input.keys
+    const frozen = paused || !active
 
-    const cur = ISLANDS[index]
-    const prev = ISLANDS[index - 1]
-    let x
-    let z
-    let faceYaw
+    // Steering + throttle from held keys.
+    let turn = 0
+    let throttle = 0
+    if (!frozen) {
+      if (k.KeyA || k.ArrowLeft) turn += 1
+      if (k.KeyD || k.ArrowRight) turn -= 1
+      if (k.KeyW || k.ArrowUp) throttle += 1
+      if (k.KeyS || k.ArrowDown) throttle -= 1
+    }
 
-    if (e >= 0 && cur && cur.toNext) {
-      const s = samplePath(cur.toNext, e)
-      x = s.x
-      z = s.z
-      faceYaw = Math.atan2(s.dx, s.dz)
-    } else if (e < 0 && prev && prev.toNext) {
-      const s = samplePath(prev.toNext, 1 + e) // sail back toward the previous berth
-      x = s.x
-      z = s.z
-      faceYaw = Math.atan2(-s.dx, -s.dz)
-    } else {
-      const berth = cur ? cur.berth : ISLANDS[0].berth
-      x = berth[0]
-      z = berth[1]
-      // At rest, point toward wherever the next leg heads.
-      if (cur && cur.toNext) {
-        const s = samplePath(cur.toNext, 0)
-        faceYaw = Math.atan2(s.dx, s.dz)
+    yaw.current += turn * BOAT.turnSpeed * dt
+    speed.current += (throttle * BOAT.moveSpeed - speed.current) * Math.min(1, dt * 3)
+    if (Math.abs(speed.current) < 0.002) speed.current = 0
+
+    // Proposed displacement along the heading.
+    const fx = Math.sin(yaw.current)
+    const fz = Math.cos(yaw.current)
+    const vx = fx * speed.current * dt
+    const vz = fz * speed.current * dt
+    let nx = x.current + vx
+    let nz = z.current + vz
+
+    // Solid islands: try the full move, else slide along one axis, else stop.
+    if (hullBlocked(nx, nz, yaw.current)) {
+      if (!hullBlocked(x.current + vx, z.current, yaw.current)) {
+        nx = x.current + vx
+        nz = z.current
+      } else if (!hullBlocked(x.current, z.current + vz, yaw.current)) {
+        nx = x.current
+        nz = z.current + vz
       } else {
-        faceYaw = yaw.current
+        nx = x.current
+        nz = z.current
+        speed.current = 0
       }
     }
 
-    g.position.x = x
-    g.position.z = z
+    x.current = clamp(nx, -WORLD_BOUND, WORLD_BOUND)
+    z.current = clamp(nz, -WORLD_BOUND, WORLD_BOUND)
+
+    // Keep a standoff from every shore: while playing, shove the hull off any
+    // island it drifts too close to so it can never stay in contact.
+    if (!frozen) {
+      const push = repel(x.current, z.current)
+      if (push) {
+        const step = BOAT.pushStrength * dt
+        const rx = clamp(x.current + push.px * step, -WORLD_BOUND, WORLD_BOUND)
+        const rz = clamp(z.current + push.pz * step, -WORLD_BOUND, WORLD_BOUND)
+        if (!hullBlocked(rx, rz, yaw.current)) {
+          x.current = rx
+          z.current = rz
+        }
+        speed.current *= 0.5
+      }
+    }
+
+    g.position.x = x.current
+    g.position.z = z.current
     g.position.y = FLOAT_Y + Math.sin(clock.elapsedTime * 1.1) * 0.13
-
-    // Shortest-arc yaw smoothing.
-    let d = faceYaw - yaw.current
-    while (d > Math.PI) d -= Math.PI * 2
-    while (d < -Math.PI) d += Math.PI * 2
-    yaw.current += d * Math.min(1, dt * 2.6)
     g.rotation.y = yaw.current + BOAT.baseYaw
-    g.rotation.z = Math.sin(clock.elapsedTime * 0.9) * 0.03
+    g.rotation.z = Math.sin(clock.elapsedTime * 0.9) * 0.03 - turn * 0.12 // lean into turns
 
-    boatState.x = x
-    boatState.z = z
+    boatState.x = x.current
+    boatState.z = z.current
     boatState.y = g.position.y
     boatState.yaw = yaw.current
+
+    // Tell the UI which island (if any) is now in docking range.
+    const dock = active ? nearestDock(x.current, z.current) : null
+    if (dock !== lastNear.current) {
+      lastNear.current = dock
+      reportNear(dock)
+    }
   })
 
   return (
@@ -191,6 +269,10 @@ function IslandLabels() {
 function CameraRig() {
   const first = useRef(true)
   const lookAt = useRef(new THREE.Vector3())
+  const { active } = useJourney()
+
+  // Snap (don't glide) to the boat whenever the journey re-enters the page.
+  useEffect(() => { first.current = true }, [active])
 
   useFrame(({ camera }, delta) => {
     const dt = Math.min(delta, 0.05)
@@ -254,11 +336,17 @@ function SceneContents() {
 // ─── Root component ───────────────────────────────────────────────────────────
 export default function Scene3D() {
   return (
-    // Pure background: the scroll journey drives the boat; page content (and the
-    // header) render on top. Sky-blue fallback while WebGL initialises.
+    // Pure background: free-roam boat + page content render on top.
     <div style={{ position: 'fixed', inset: 0, zIndex: -1, background: '#a8d8ea' }}>
       <Canvas
-        camera={{ position: [ISLANDS[0].berth[0], FLOAT_Y + BOAT.camUp, ISLANDS[0].berth[1] + BOAT.camBack], fov: 60 }}
+        camera={{
+          position: [
+            START.x - Math.sin(START.yaw) * BOAT.camBack,
+            FLOAT_Y + BOAT.camUp,
+            START.z - Math.cos(START.yaw) * BOAT.camBack
+          ],
+          fov: 60
+        }}
         gl={{ antialias: true, alpha: false }}
         style={{ width: '100%', height: '100%' }}
       >
