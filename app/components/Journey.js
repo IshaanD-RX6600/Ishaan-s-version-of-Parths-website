@@ -23,8 +23,9 @@ export const LABEL_Y = 12 // height of the floating island signs
 
 // Where the boat spawns every time the journey (re)starts: open water near the
 // bottom of the map (z = 46 sits past the islands' ~±39 extent, so it's always
-// clear water), pointed up into the archipelago (yaw = π faces −z).
-export const START = { x: 0, z: 46, yaw: Math.PI }
+// clear water), pointed up into the archipelago (yaw = π faces −z). x = 4 keeps
+// the straight-ahead lane clear of the northern shark that sits near x = 0.
+export const START = { x: 4, z: 46, yaw: Math.PI }
 
 export const BOAT = {
   glb: 'sailboat.glb',
@@ -34,8 +35,10 @@ export const BOAT = {
   moveSpeed: 9, // world units / second at full throttle
   turnSpeed: 1.7, // radians / second
   hullHalf: 2.6, // half-length sampled for collision (bow / stern)
-  clearance: 2.8, // how close to land before the boat is eased off
-  pushStrength: 8, // how firmly the boat is shoved away from islands
+  clearance: 1.3, // how close to land before the boat is eased off (small, so
+  // it only nudges right at the shore — a big radius walled the boat out of open
+  // water and stalled it in narrow channels)
+  pushStrength: 6, // how firmly the boat is shoved away from islands
   // Near-bird's-eye chase camera (high up, slight angle behind the boat)
   camBack: 8,
   camUp: 27,

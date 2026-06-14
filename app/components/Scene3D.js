@@ -6,7 +6,7 @@ import { useGLTF, Environment, Sky, Html } from '@react-three/drei'
 import * as THREE from 'three'
 
 import { useJourney, ISLANDS, BOAT, FLOAT_Y, LABEL_Y, DOCK_RADIUS, START, input } from './Journey'
-import { isBlocked, buildOccupancy, WORLD_BOUND } from './islandCollision'
+import { isBlocked, buildOccupancy, hasOccupancy, WORLD_BOUND } from './islandCollision'
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
 const ISLAND_GLB = `${BASE}/islands.glb`
@@ -105,19 +105,30 @@ function Ocean() {
 function IslandModel() {
   const { scene } = useGLTF(ISLAND_GLB)
   const ref = useRef()
+  const baked = useRef(false)
 
-  // Bake the collision mask from the real, placed mesh once it's mounted (next
-  // tick, so the intro can paint first). Guarantees the wall matches the rock.
-  useEffect(() => {
-    const id = setTimeout(() => {
-      if (ref.current) buildOccupancy(ref.current)
-    }, 0)
-    return () => clearTimeout(id)
-  }, [])
-
+  // Bake the collision mask from the real, placed mesh, driven from the render
+  // loop. A one-shot setTimeout(0) was fragile — under React StrictMode remounts
+  // (dev) the ref could be null when it fired, so the mask never installed and
+  // the boat sailed through everything. Here we retry every frame until it
+  // succeeds, the first frame the model is actually mounted (the intro overlay
+  // hides the brief bake hitch). The grid lives in module state, so it survives
+  // any remount.
   useFrame(({ clock }) => {
     if (!ref.current) return
     ref.current.position.y = -1.9 + Math.sin(clock.elapsedTime * 0.28 + 1.1) * 0.04
+
+    if (!baked.current && !hasOccupancy()) {
+      try {
+        const occ = buildOccupancy(ref.current)
+        let n = 0
+        for (let i = 0; i < occ.grid.length; i++) if (occ.grid[i]) n++
+        baked.current = true
+        console.log(`[island collision] baked ${n}/${occ.grid.length} blocked cells`)
+      } catch (e) {
+        console.error('[island collision] bake failed, will retry', e)
+      }
+    }
   })
 
   return <primitive ref={ref} object={scene} scale={[1.8, 1.8, 1.8]} position={[0, -1.9, 0]} />
@@ -207,7 +218,9 @@ function Boat() {
           x.current = rx
           z.current = rz
         }
-        speed.current *= 0.5
+        // Only a feather of drag — halving the speed every frame made sailing
+        // along a coastline feel like the boat was stuck in open water.
+        speed.current *= 0.92
       }
     }
 
