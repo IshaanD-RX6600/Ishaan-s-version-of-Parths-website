@@ -12,6 +12,8 @@ import {
 import { AnimatePresence, motion } from 'framer-motion'
 import { usePathname, useRouter } from 'next/navigation'
 
+import { isBlocked } from './islandCollision'
+
 // ─── Scene + content config ───────────────────────────────────────────────────
 // Positions are [x, z] in runtime world space (islands.glb rendered at 1.8×).
 // `center` anchors the floating label; `berth` is the water dock point the boat
@@ -26,6 +28,9 @@ export const LABEL_Y = 12 // height of the floating island signs
 // clear water), pointed up into the archipelago (yaw = π faces −z).
 export const START = { x: 0, z: 46, yaw: Math.PI }
 
+// Live boat transform, shared (boat → camera → minimap) without React re-renders.
+export const boatState = { x: START.x, y: FLOAT_Y, z: START.z, yaw: START.yaw }
+
 export const BOAT = {
   glb: 'sailboat.glb',
   scale: 0.0035,
@@ -34,8 +39,9 @@ export const BOAT = {
   moveSpeed: 9, // world units / second at full throttle
   turnSpeed: 1.7, // radians / second
   hullHalf: 2.6, // half-length sampled for collision (bow / stern)
-  clearance: 2.8, // how close to land before the boat is eased off
-  pushStrength: 8, // how firmly the boat is shoved away from islands
+  clearance: 1.4, // how close to land before the boat is eased off (small, so it
+  //                 can hug the shore and isn't shoved off open water near edges)
+  pushStrength: 5, // how firmly the boat is shoved away from islands
   // Near-bird's-eye chase camera (high up, slight angle behind the boat)
   camBack: 8,
   camUp: 27,
@@ -43,7 +49,9 @@ export const BOAT = {
   camLookHeight: 0
 }
 
-export const DOCK_RADIUS = 7.5 // how close the boat must get to a berth to land
+export const DOCK_RADIUS = 8.5 // how close the boat must get to a berth to land
+//                                (a touch wider than the old 7.5 so docking stays
+//                                comfortable now that the islands reach further out)
 
 export const ISLANDS = [
   {
@@ -69,6 +77,35 @@ export const ISLANDS = [
 ]
 
 const ISLAND_BY_KEY = Object.fromEntries(ISLANDS.map((i) => [i.key, i]))
+
+// ─── Resume-sailing handoff ────────────────────────────────────────────────────
+// Set by the "continue sailing" arrow on an island page; consumed once when the
+// map (route '/') re-activates so the boat picks up near the island it just left
+// instead of teleporting back to START. `null` → fresh start at START.
+export const resumeState = { spawn: null }
+
+// Where to drop the boat when it sails back out from `islandKey`: just seaward of
+// that island's berth, in open water and past DOCK_RADIUS so it doesn't instantly
+// re-dock, facing away from the island so the first stroke carries it out to sea.
+export function resumeSpawnFor(islandKey) {
+  const isl = ISLAND_BY_KEY[islandKey]
+  if (!isl) return null
+  const [bx, bz] = isl.berth
+  const [cx, cz] = isl.center
+  let dx = bx - cx
+  let dz = bz - cz
+  const len = Math.hypot(dx, dz) || 1
+  dx /= len
+  dz /= len
+  const yaw = Math.atan2(dx, dz) // heading that faces seaward (forward = sin,cos)
+  // Walk outward from the berth until we clear land and docking range.
+  for (let d = DOCK_RADIUS + 3; d <= DOCK_RADIUS + 18; d += 1.5) {
+    const x = bx + dx * d
+    const z = bz + dz * d
+    if (!isBlocked(x, z)) return { x, z, yaw }
+  }
+  return { x: bx + dx * (DOCK_RADIUS + 6), z: bz + dz * (DOCK_RADIUS + 6), yaw }
+}
 
 // Held movement keys, shared provider → Scene3D without React re-renders.
 export const input = { keys: {} }
@@ -153,9 +190,19 @@ export function JourneyProvider({ children }) {
   }, [])
 
   // Leaving the landing route resets the journey so it greets the visitor anew
-  // (intro re-arms, held keys drop, dock state clears) on their return.
+  // (intro re-arms, held keys drop, dock state clears) on their return — UNLESS
+  // they came back via the "continue sailing" arrow, in which case we skip the
+  // intro and drop them straight back into the helm. The matching boat re-seed
+  // reads `resumeState.spawn` in Scene3D; we clear it here, in the provider
+  // effect, which React runs AFTER the child Boat effect has already consumed it.
   useEffect(() => {
-    if (!active) {
+    if (active) {
+      if (resumeState.spawn) {
+        setStarted(true)
+        setNear(null)
+        resumeState.spawn = null
+      }
+    } else {
       input.keys = {}
       setStarted(false)
       setNear(null)
@@ -199,7 +246,9 @@ function WaveEdge({ className, fill = '#ffffff', flip = false }) {
 // ─── "Press any key to set sail" intro (shows on every landing-page visit) ─────
 function Intro() {
   const { active, started, navTarget, startSail } = useJourney()
-  const show = active && !started && !navTarget
+  // Suppress the gate when returning via the "continue sailing" arrow (a resume
+  // is pending until the provider effect flips `started`), so it doesn't flash.
+  const show = active && !started && !navTarget && !resumeState.spawn
 
   return (
     <AnimatePresence>
@@ -341,6 +390,37 @@ function ControlsHint() {
   )
 }
 
+// ─── "Continue sailing" escape arrow (shown while exploring an island page) ────
+function EscapeArrow() {
+  const pathname = usePathname()
+  const router = useRouter()
+  if (pathname === '/') return null // only while docked on an island page
+
+  const island = ISLANDS.find((i) => i.route === pathname)
+
+  const setSail = () => {
+    // Resume near the island we're leaving (not the far-off START point).
+    resumeState.spawn = island ? resumeSpawnFor(island.key) : null
+    router.push('/')
+  }
+
+  return (
+    <motion.button
+      type="button"
+      onClick={setSail}
+      initial={{ opacity: 0, x: -16 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.5, delay: 0.2 }}
+      whileHover={{ x: -3 }}
+      className="group fixed left-4 top-20 z-40 flex items-center gap-2 rounded-full border border-white/40 bg-ocean/70 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_14px_40px_-12px_rgba(13,59,94,0.8)] backdrop-blur-md transition hover:bg-ocean/90 sm:left-6"
+      aria-label="Continue sailing"
+    >
+      <span aria-hidden className="text-base leading-none transition group-hover:-translate-x-0.5">←</span>
+      <span className="uppercase tracking-[0.18em]">Continue sailing</span>
+    </motion.button>
+  )
+}
+
 // ─── DOM overlay: intro gate, sailing hint, water voyage transition ───────────
 export function JourneyOverlay() {
   return (
@@ -348,6 +428,7 @@ export function JourneyOverlay() {
       <ControlsHint />
       <Intro />
       <Voyage />
+      <EscapeArrow />
     </>
   )
 }

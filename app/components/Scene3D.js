@@ -5,7 +5,7 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { useGLTF, Environment, Sky, Html } from '@react-three/drei'
 import * as THREE from 'three'
 
-import { useJourney, ISLANDS, BOAT, FLOAT_Y, LABEL_Y, DOCK_RADIUS, START, input } from './Journey'
+import { useJourney, ISLANDS, BOAT, FLOAT_Y, LABEL_Y, DOCK_RADIUS, START, input, resumeState, boatState } from './Journey'
 import { isBlocked, buildOccupancy, WORLD_BOUND } from './islandCollision'
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
@@ -13,9 +13,6 @@ const ISLAND_GLB = `${BASE}/islands.glb`
 const BOAT_GLB = `${BASE}/${BOAT.glb}`
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
-
-// Live boat transform, shared boat → camera without React re-renders.
-const boatState = { x: START.x, y: FLOAT_Y, z: START.z, yaw: START.yaw }
 
 // The boat's hull occupies more than a point — sample bow, centre and stern so
 // it can't nose into an island before its centre cell registers a hit.
@@ -134,17 +131,20 @@ function Boat() {
   const lastNear = useRef(null)
   const { active, paused, reportNear } = useJourney()
 
-  // Every time the journey (re)starts, drop the boat back in its open-water
-  // berth near the bottom of the map, pointed up into the islands.
+  // Every time the journey (re)starts, drop the boat back at START (open water
+  // near the bottom of the map) — OR, when the visitor came back via the
+  // "continue sailing" arrow, just off the island they were exploring
+  // (`resumeState.spawn`). We only read it here; the provider clears it after.
   useEffect(() => {
     if (!active) return
-    x.current = START.x
-    z.current = START.z
-    yaw.current = START.yaw
+    const spawn = resumeState.spawn || START
+    x.current = spawn.x
+    z.current = spawn.z
+    yaw.current = spawn.yaw
     speed.current = 0
-    boatState.x = START.x
-    boatState.z = START.z
-    boatState.yaw = START.yaw
+    boatState.x = spawn.x
+    boatState.z = spawn.z
+    boatState.yaw = spawn.yaw
     boatState.y = FLOAT_Y
   }, [active])
 
