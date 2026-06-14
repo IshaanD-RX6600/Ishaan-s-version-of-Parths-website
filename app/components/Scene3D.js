@@ -5,7 +5,7 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { useGLTF, Environment, Sky, Html } from '@react-three/drei'
 import * as THREE from 'three'
 
-import { useJourney, ISLANDS, BOAT, FLOAT_Y, LABEL_Y, DOCK_RADIUS, START, input } from './Journey'
+import { useJourney, ISLANDS, BOAT, FLOAT_Y, LABEL_Y, DOCK_RADIUS, START, input, boatState } from './Journey'
 import { isBlocked, buildOccupancy, hasOccupancy, WORLD_BOUND } from './islandCollision'
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
@@ -13,9 +13,6 @@ const ISLAND_GLB = `${BASE}/islands.glb`
 const BOAT_GLB = `${BASE}/${BOAT.glb}`
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
-
-// Live boat transform, shared boat → camera without React re-renders.
-const boatState = { x: START.x, y: FLOAT_Y, z: START.z, yaw: START.yaw }
 
 // The boat's hull occupies more than a point — sample bow, centre and stern so
 // it can't nose into an island before its centre cell registers a hit.

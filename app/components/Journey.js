@@ -27,6 +27,14 @@ export const LABEL_Y = 12 // height of the floating island signs
 // the straight-ahead lane clear of the northern shark that sits near x = 0.
 export const START = { x: 4, z: 46, yaw: Math.PI }
 
+// Live boat transform, shared boat → camera → minimap without React re-renders.
+// Scene3D's Boat writes it each frame; the chase camera and the minimap read it.
+export const boatState = { x: START.x, y: FLOAT_Y, z: START.z, yaw: START.yaw }
+
+// Half-extent (world units) the minimap image spans; must match the range the
+// minimap.png was baked at (public/minimap.png → ±48).
+export const MINIMAP_RANGE = 48
+
 export const BOAT = {
   glb: 'sailboat.glb',
   scale: 0.0035,
@@ -344,10 +352,107 @@ function ControlsHint() {
   )
 }
 
+// ─── Minimap (Fortnite-style): top-down map with a live boat marker ───────────
+const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
+const MAP_PX = 176 // on-screen size of the map face
+const clamp01 = (v) => Math.min(1, Math.max(0, v))
+
+function Minimap() {
+  const { active, started, navTarget } = useJourney()
+  const show = active && started && !navTarget
+  const marker = useRef(null)
+
+  // Drive the boat marker straight off the shared boatState every frame — no
+  // React re-renders. World (x, z) → map face: +x right, +z down (matches how
+  // minimap.png was baked). The arrow points along the heading.
+  useEffect(() => {
+    if (!show) return
+    let raf
+    const tick = () => {
+      const m = marker.current
+      if (m) {
+        const u = clamp01((boatState.x + MINIMAP_RANGE) / (2 * MINIMAP_RANGE))
+        const v = clamp01((boatState.z + MINIMAP_RANGE) / (2 * MINIMAP_RANGE))
+        const deg = 180 - (boatState.yaw * 180) / Math.PI
+        m.style.transform = `translate(${u * MAP_PX}px, ${v * MAP_PX}px) translate(-50%, -50%) rotate(${deg}deg)`
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [show])
+
+  return (
+    <AnimatePresence>
+      {show && (
+        <motion.div
+          key="minimap"
+          initial={{ opacity: 0, y: -8, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -8, scale: 0.96 }}
+          transition={{ duration: 0.4, ease: [0.4, 0, 0.2, 1] }}
+          className="pointer-events-none fixed left-4 top-20 z-30"
+        >
+          <div
+            className="relative overflow-hidden rounded-2xl border-2 border-white/55 shadow-[0_18px_45px_-12px_rgba(13,59,94,0.85)]"
+            style={{ width: MAP_PX, height: MAP_PX }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`${BASE}/minimap.png`}
+              alt="Map of the archipelago"
+              draggable={false}
+              className="absolute inset-0 h-full w-full select-none object-cover"
+            />
+
+            {/* island destination dots */}
+            {ISLANDS.map((island) => (
+              <span
+                key={island.key}
+                className="absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white ring-1 ring-[#0D3B5E]/70"
+                style={{
+                  left: clamp01((island.center[0] + MINIMAP_RANGE) / (2 * MINIMAP_RANGE)) * MAP_PX,
+                  top: clamp01((island.center[1] + MINIMAP_RANGE) / (2 * MINIMAP_RANGE)) * MAP_PX
+                }}
+              />
+            ))}
+
+            {/* boat marker — rotates with heading */}
+            <svg
+              ref={marker}
+              width="20"
+              height="20"
+              viewBox="0 0 20 20"
+              className="absolute left-0 top-0 will-change-transform"
+              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.65))' }}
+              aria-hidden
+            >
+              <path
+                d="M10 2 L15.5 17 L10 13.5 L4.5 17 Z"
+                fill="#FFD166"
+                stroke="#0D3B5E"
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+              />
+            </svg>
+
+            {/* inner frame + north marker */}
+            <div className="pointer-events-none absolute inset-0 rounded-2xl ring-1 ring-inset ring-white/20" />
+            <span className="absolute left-1/2 top-1 -translate-x-1/2 rounded-full bg-[#0D3B5E]/75 px-1.5 text-[9px] font-bold leading-snug text-white/90">
+              N
+            </span>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
 // ─── DOM overlay: intro gate, sailing hint, water voyage transition ───────────
 export function JourneyOverlay() {
   return (
     <>
+      <Minimap />
       <ControlsHint />
       <Intro />
       <Voyage />
