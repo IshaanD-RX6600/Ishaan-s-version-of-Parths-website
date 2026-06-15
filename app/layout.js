@@ -8,6 +8,7 @@ import PageTransition from './components/PageTransition'
 import { JourneyProvider, JourneyOverlay } from './components/Journey'
 
 const Scene3D = dynamic(() => import('./components/Scene3D'), { ssr: false })
+const Minimap = dynamic(() => import('./components/Minimap'), { ssr: false })
 
 const righteous = Righteous({
   subsets: ['latin'],
@@ -38,6 +39,7 @@ export default function RootLayout({ children }) {
         <JourneyProvider>
           {/* Fixed 3D scene — drives the boat journey, rendered client-side only */}
           <Scene3D />
+          <Minimap />
 
           <div className="relative min-h-screen">
             <header className="sticky top-0 z-20 border-b border-white/20 bg-white/10 backdrop-blur-md">
